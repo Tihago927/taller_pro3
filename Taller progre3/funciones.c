@@ -1,3 +1,8 @@
+/*
+  Implementación modular del SGIC (inventario + ventas + búsqueda "cercana" para cliente)
+  Versión SIN persistencia en archivos (todo en memoria)
+*/
+
 #include "funciones.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,18 +11,12 @@
 #include <time.h>
 #include <math.h>
 
-/* ================== IDs ================== */
 static int nextId = 1;
 static int nextSaleId = 1;
 
-int getNextId(void) { return nextId++; }
-void setNextId(int start) { if (start > nextId) nextId = start; }
+/* ================== VALIDACIONES ================== */
 
-int getNextSaleId(void) { return nextSaleId++; }
-void setNextSaleId(int start) { if (start > nextSaleId) nextSaleId = start; }
-
-/* ================== Validaciones ================== */
-static int isOnlyLetters(const char *s) {
+int isOnlyLetters(const char *s) {
     if (!s || !*s) return 0;
     for (size_t i = 0; s[i]; i++) {
         if (!isalpha((unsigned char)s[i]) && s[i] != ' ')
@@ -26,25 +25,32 @@ static int isOnlyLetters(const char *s) {
     return 1;
 }
 
-static int isPositiveInt(int n) { return n > 0; }
-static int isPositiveDouble(double n) { return n > 0.0; }
+int isPositiveInt(int n) {
+    return n > 0;
+}
 
-static int isValidYear(int anio) {
+int isPositiveDouble(double n) {
+    return n > 0.0;
+}
+
+/* Año válido: 1980 hasta año actual + 1 */
+int isValidYear(int anio) {
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
-    int max = tm->tm_year + 1900 + 1;
-    return anio >= 1980 && anio <= max;
+    int anioMax = tm->tm_year + 1900 + 1;
+    return anio >= 1980 && anio <= anioMax;
 }
 
-static int isOnlyDigits(const char *s) {
-    if (!s) return 0;
-    for (size_t i = 0; s[i]; i++) {
-        if (!isdigit((unsigned char)s[i])) return 0;
-    }
-    return 1;
-}
+/* ================== IDs ================== */
+
+int getNextId(void) { return nextId++; }
+void setNextId(int start) { if (start > nextId) nextId = start; }
+
+int getNextSaleId(void) { return nextSaleId++; }
+void setNextSaleId(int start) { if (start > nextSaleId) nextSaleId = start; }
 
 /* ================== Helpers ================== */
+
 static void ensureCapacity(Inventory *inv) {
     if (!inv->vehiculos) {
         inv->capacity = 10;
@@ -53,7 +59,6 @@ static void ensureCapacity(Inventory *inv) {
         inv->capacity *= 2;
         inv->vehiculos = realloc(inv->vehiculos, inv->capacity * sizeof(Vehicle));
     }
-
     if (!inv->vehiculos) {
         fprintf(stderr, "Error de memoria\n");
         exit(EXIT_FAILURE);
@@ -68,24 +73,8 @@ static void ensureSalesCapacity(Inventory *inv) {
         inv->sales_capacity *= 2;
         inv->sales = realloc(inv->sales, inv->sales_capacity * sizeof(Sale));
     }
-
     if (!inv->sales) {
         fprintf(stderr, "Error de memoria (ventas)\n");
-        exit(EXIT_FAILURE);
-    }
-}
-
-static void ensureClientsCapacity(Inventory *inv) {
-    if (!inv->clientes) {
-        inv->clientes_capacity = 10;
-        inv->clientes = malloc(inv->clientes_capacity * sizeof(Client));
-    } else if (inv->clientes_size >= inv->clientes_capacity) {
-        inv->clientes_capacity *= 2;
-        inv->clientes = realloc(inv->clientes, inv->clientes_capacity * sizeof(Client));
-    }
-
-    if (!inv->clientes) {
-        fprintf(stderr, "Error de memoria (clientes)\n");
         exit(EXIT_FAILURE);
     }
 }
@@ -96,36 +85,38 @@ static int matchesStr(const char *a, const char *b) {
 
     char la[STR_LEN], lb[STR_LEN];
     size_t i;
-    for (i = 0; a[i] && i < STR_LEN - 1; i++) la[i] = tolower((unsigned char)a[i]);
+
+    for (i = 0; a[i] && i < STR_LEN - 1; i++)
+        la[i] = tolower((unsigned char)a[i]);
     la[i] = '\0';
-    for (i = 0; b[i] && i < STR_LEN - 1; i++) lb[i] = tolower((unsigned char)b[i]);
+
+    for (i = 0; b[i] && i < STR_LEN - 1; i++)
+        lb[i] = tolower((unsigned char)b[i]);
     lb[i] = '\0';
 
     return strstr(lb, la) != NULL;
 }
 
 /* ================== Init / Free ================== */
+
 void initInventory(Inventory *inv) {
     inv->vehiculos = NULL;
     inv->size = inv->capacity = 0;
-
     inv->sales = NULL;
     inv->sales_size = inv->sales_capacity = 0;
-
-    inv->clientes = NULL;
-    inv->clientes_size = inv->clientes_capacity = 0;
 }
 
 void freeInventory(Inventory *inv) {
     free(inv->vehiculos);
     free(inv->sales);
-    free(inv->clientes);
     initInventory(inv);
 }
 
 /* ================== CRUD Vehículos ================== */
+
 int addVehicle(Inventory *inv, const Vehicle *v) {
-    if (!inv || !v) return 0;
+
+    if (!v) return 0;
     if (!isOnlyLetters(v->marca)) return 0;
     if (!isOnlyLetters(v->modelo)) return 0;
     if (!isValidYear(v->anio)) return 0;
@@ -136,6 +127,7 @@ int addVehicle(Inventory *inv, const Vehicle *v) {
 
     Vehicle copy = *v;
     if (copy.id <= 0) copy.id = getNextId();
+
     inv->vehiculos[inv->size++] = copy;
 
     if (copy.id >= nextId) setNextId(copy.id + 1);
@@ -144,7 +136,8 @@ int addVehicle(Inventory *inv, const Vehicle *v) {
 }
 
 Vehicle *findVehicleById(Inventory *inv, int id) {
-    if (!inv || !isPositiveInt(id)) return NULL;
+    if (!isPositiveInt(id)) return NULL;
+
     for (size_t i = 0; i < inv->size; i++)
         if (inv->vehiculos[i].id == id)
             return &inv->vehiculos[i];
@@ -152,10 +145,12 @@ Vehicle *findVehicleById(Inventory *inv, int id) {
 }
 
 int removeVehicleById(Inventory *inv, int id) {
-    if (!inv || !isPositiveInt(id)) return 0;
+    if (!isPositiveInt(id)) return 0;
+
     for (size_t i = 0; i < inv->size; i++) {
         if (inv->vehiculos[i].id == id) {
-            memmove(&inv->vehiculos[i], &inv->vehiculos[i+1], (inv->size-i-1)*sizeof(Vehicle));
+            memmove(&inv->vehiculos[i], &inv->vehiculos[i + 1],
+                    (inv->size - i - 1) * sizeof(Vehicle));
             inv->size--;
             return 1;
         }
@@ -163,63 +158,99 @@ int removeVehicleById(Inventory *inv, int id) {
     return 0;
 }
 
-int updateVehicle(Inventory *inv, int id, const Vehicle *v) {
-    Vehicle *orig = findVehicleById(inv, id);
-    if (!orig || !v) return 0;
-    *orig = *v;
-    orig->id = id;
-    return 1;
-}
+/* ================== Búsqueda simple ================== */
 
-/* ================== Clientes ================== */
-int addClient(Inventory *inv, const Client *c) {
-    if (!inv || !c) return 0;
-    if (!isOnlyLetters(c->nombre)) return 0;
-    if (!isOnlyLetters(c->apellido)) return 0;
-    if (c->telefono[0] && !isOnlyDigits(c->telefono)) return 0;
-    if (!isPositiveDouble(c->presupuesto)) return 0;
+Vehicle *findVehiclesByRequirement(Inventory *inv, const Requirement *req, size_t *out_count) {
 
-    ensureClientsCapacity(inv);
+    if (!req || req->maxPrecio < 0) return NULL;
+    if (req->minAnio && !isValidYear(req->minAnio)) return NULL;
+    if (req->maxAnio && !isValidYear(req->maxAnio)) return NULL;
+    if (req->minAnio && req->maxAnio && req->minAnio > req->maxAnio) return NULL;
 
-    Client copy = *c;
-    copy.id = getNextId();
-    inv->clientes[inv->clientes_size++] = copy;
-    if (copy.id >= nextId) setNextId(copy.id + 1);
+    Vehicle *res = NULL;
+    size_t count = 0, cap = 0;
 
-    return copy.id;
-}
+    for (size_t i = 0; i < inv->size; i++) {
+        Vehicle *v = &inv->vehiculos[i];
+        if (!v->disponible) continue;
+        if (!matchesStr(req->marca, v->marca)) continue;
+        if (!matchesStr(req->modelo, v->modelo)) continue;
+        if (req->minAnio && v->anio < req->minAnio) continue;
+        if (req->maxAnio && v->anio > req->maxAnio) continue;
+        if (req->maxPrecio && v->precio > req->maxPrecio) continue;
 
-Client *findClientById(Inventory *inv, int id) {
-    if (!inv || !isPositiveInt(id)) return NULL;
-    for (size_t i = 0; i < inv->clientes_size; i++)
-        if (inv->clientes[i].id == id)
-            return &inv->clientes[i];
-    return NULL;
-}
-
-int removeClientById(Inventory *inv, int id) {
-    if (!inv || !isPositiveInt(id)) return 0;
-    for (size_t i = 0; i < inv->clientes_size; i++) {
-        if (inv->clientes[i].id == id) {
-            memmove(&inv->clientes[i], &inv->clientes[i+1], (inv->clientes_size-i-1)*sizeof(Client));
-            inv->clientes_size--;
-            return 1;
+        if (count >= cap) {
+            cap = cap ? cap * 2 : 8;
+            res = realloc(res, cap * sizeof(Vehicle));
         }
+        res[count++] = *v;
     }
-    return 0;
+
+    *out_count = count;
+    return res;
 }
 
-int updateClient(Inventory *inv, int id, const Client *c) {
-    Client *orig = findClientById(inv, id);
-    if (!orig || !c) return 0;
-    *orig = *c;
-    orig->id = id;
-    return 1;
+/* ================== Búsqueda para cliente ================== */
+
+typedef struct {
+    Vehicle v;
+    double score;
+} VS;
+
+static int cmpVS(const void *a, const void *b) {
+    const VS *A = a;
+    const VS *B = b;
+    return (A->score > B->score) - (A->score < B->score);
+}
+
+Vehicle *findVehiclesForClient(Inventory *inv, const Client *c, size_t *out_count) {
+
+    if (!c || !isPositiveDouble(c->presupuesto)) return NULL;
+    if (c->marcaPreferida[0] && !isOnlyLetters(c->marcaPreferida)) return NULL;
+
+    VS *arr = NULL;
+    size_t cnt = 0, cap = 0;
+
+    time_t t = time(NULL);
+    int curYear = localtime(&t)->tm_year + 1900;
+
+    for (size_t i = 0; i < inv->size; i++) {
+        Vehicle *v = &inv->vehiculos[i];
+        if (!v->disponible || v->precio > c->presupuesto) continue;
+        if (!isValidYear(v->anio)) continue;
+
+        double score = fabs(v->precio - c->presupuesto) / c->presupuesto;
+        score += 0.2 * ((double)(curYear - v->anio) / 50.0);
+        score += 0.2 * ((double)v->kilometraje / 300000.0);
+
+        if (c->marcaPreferida[0] && matchesStr(c->marcaPreferida, v->marca))
+            score *= 0.7;
+
+        if (cnt >= cap) {
+            cap = cap ? cap * 2 : 8;
+            arr = realloc(arr, cap * sizeof(VS));
+        }
+
+        arr[cnt++] = (VS){*v, score};
+    }
+
+    qsort(arr, cnt, sizeof(VS), cmpVS);
+
+    Vehicle *out = malloc(cnt * sizeof(Vehicle));
+    for (size_t i = 0; i < cnt; i++)
+        out[i] = arr[i].v;
+
+    free(arr);
+    *out_count = cnt;
+    return out;
 }
 
 /* ================== Ventas ================== */
-int registerSale(Inventory *inv, int vehicleId, const char *buyer, const char *seller, double price) {
-    if (!inv || !isPositiveInt(vehicleId)) return 0;
+
+int registerSale(Inventory *inv, int vehicleId,
+                 const char *buyer, const char *seller, double price) {
+
+    if (!isPositiveInt(vehicleId)) return 0;
     if (!buyer || !isOnlyLetters(buyer)) return 0;
     if (!seller || !isOnlyLetters(seller)) return 0;
     if (!isPositiveDouble(price)) return 0;
@@ -232,38 +263,36 @@ int registerSale(Inventory *inv, int vehicleId, const char *buyer, const char *s
     Sale s = {0};
     s.sale_id = getNextSaleId();
     s.vehicle_id = vehicleId;
-    strncpy(s.buyer, buyer, STR_LEN-1);
-    strncpy(s.seller, seller, STR_LEN-1);
+    strncpy(s.buyer, buyer, STR_LEN - 1);
+    strncpy(s.seller, seller, STR_LEN - 1);
     s.price = price;
 
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
-    snprintf(s.date, DATE_LEN, "%04d-%02d-%02d", tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday);
+    snprintf(s.date, DATE_LEN, "%04d-%02d-%02d",
+             tm->tm_year + 1900,
+             tm->tm_mon + 1,
+             tm->tm_mday);
 
     inv->sales[inv->sales_size++] = s;
     v->disponible = 0;
+
     return s.sale_id;
 }
 
-void listSales(const Inventory *inv) {
-    if (!inv || inv->sales_size == 0) {
-        printf("No hay ventas registradas.\n");
-        return;
-    }
-    for (size_t i = 0; i < inv->sales_size; i++) {
-        const Sale *s = &inv->sales[i];
-        printf("Venta %d | Vehículo %d | %s -> %s | %.2f | %s\n",
-               s->sale_id, s->vehicle_id, s->buyer, s->seller, s->price, s->date);
-    }
-}
+/* ================== Impresión ================== */
 
-/* ================== Listado ================== */
 void printVehicle(const Vehicle *v) {
     if (!v) return;
-    printf("ID: %d\nMarca: %s\nModelo: %s\nAño: %d\nPrecio: %.2f\nKilometraje: %d\nCondición: %s\nDisponible: %s\n",
-           v->id, v->marca, v->modelo, v->anio, v->precio, v->kilometraje,
-           v->esNuevo ? "Nuevo" : "Usado",
-           v->disponible ? "Sí" : "No");
+
+    printf("ID: %d\n", v->id);
+    printf("Marca: %s\n", v->marca);
+    printf("Modelo: %s\n", v->modelo);
+    printf("Año: %d\n", v->anio);
+    printf("Precio: %.2f\n", v->precio);
+    printf("Kilometraje: %d\n", v->kilometraje);
+    printf("Condición: %s\n", v->esNuevo ? "Nuevo" : "Usado");
+    printf("Disponible: %s\n", v->disponible ? "Sí" : "No");
 }
 
 void listVehicles(const Inventory *inv) {
@@ -271,42 +300,49 @@ void listVehicles(const Inventory *inv) {
         printf("El inventario está vacío.\n");
         return;
     }
+
     for (size_t i = 0; i < inv->size; i++) {
         printVehicle(&inv->vehiculos[i]);
-        printf("-----------------------------\n");
+        printf("----------------------------------\n");
     }
 }
 
-void listClients(const Inventory *inv) {
-    if (!inv || inv->clientes_size == 0) {
-        printf("No hay clientes registrados.\n");
+void listSales(const Inventory *inv) {
+    if (!inv || inv->sales_size == 0) {
+        printf("No hay ventas registradas.\n");
         return;
     }
-    for (size_t i = 0; i < inv->clientes_size; i++) {
-        const Client *c = &inv->clientes[i];
-        printf("ID: %d\nNombre: %s %s\nTeléfono: %s\nPresupuesto: %.2f\nMarca Preferida: %s\n-------------------------\n",
-               c->id, c->nombre, c->apellido, c->telefono[0] ? c->telefono : "N/A",
-               c->presupuesto, c->marcaPreferida[0] ? c->marcaPreferida : "N/A");
+
+    for (size_t i = 0; i < inv->sales_size; i++) {
+        Sale *s = &inv->sales[i];
+        printf("Venta %d | Vehículo %d | Comprador: %s | Vendedor: %s | %.2f | %s\n",
+               s->sale_id,
+               s->vehicle_id,
+               s->buyer,
+               s->seller,
+               s->price,
+               s->date);
     }
 }
 
-/* ================== Marcar vehículo ================== */
+/* ================== Estado ================== */
+
 int markSold(Inventory *inv, int id) {
+    if (!isPositiveInt(id)) return 0;
+
     Vehicle *v = findVehicleById(inv, id);
     if (!v) return 0;
+
     v->disponible = 0;
     return 1;
 }
 
 int markAvailable(Inventory *inv, int id) {
+    if (!isPositiveInt(id)) return 0;
+
     Vehicle *v = findVehicleById(inv, id);
     if (!v) return 0;
+
     v->disponible = 1;
     return 1;
 }
-
-/* ================== Persistencia mínima ================== */
-int saveInventoryToFile(const Inventory *inv, const char *filename) { return 1; }
-int loadInventoryFromFile(Inventory *inv, const char *filename) { return 1; }
-int saveSalesToFile(const Inventory *inv, const char *filename) { return 1; }
-int loadSalesFromFile(Inventory *inv, const char *filename) { return 1; }
